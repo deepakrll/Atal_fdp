@@ -1,76 +1,99 @@
-!pip install opencv-python-headless scikit-learn
-
+!pip install tensorflow opencv-python-headless
 from google.colab import drive
 drive.mount('/content/drive')
 
-import cv2
 import os
+import shutil
+
+IMG_SIZE = 128
+BATCH_SIZE = 1  # Changed from 32 to 1 to work with small dataset
+DATASET_PATH = '/content/drive/MyDrive/FoodSpoilageDataset'
+TEMP_TRAIN_DIR = '/content/train_only'
+
+# Recreate fresh/spoiled folders without test/
+if os.path.exists(TEMP_TRAIN_DIR):
+    shutil.rmtree(TEMP_TRAIN_DIR)
+
+os.makedirs(os.path.join(TEMP_TRAIN_DIR, 'fresh'), exist_ok=True)
+os.makedirs(os.path.join(TEMP_TRAIN_DIR, 'spoiled'), exist_ok=True)
+
+# Copy only .jpg/.png images (4 each)
+for cls in ['fresh', 'spoiled']:
+    src = os.path.join(DATASET_PATH, cls)
+    dst = os.path.join(TEMP_TRAIN_DIR, cls)
+    for fname in os.listdir(src):
+        if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+            shutil.copy(os.path.join(src, fname), dst)
+
+# Check copied images
+print("Fresh:", len(os.listdir(TEMP_TRAIN_DIR + "/fresh")))
+print("Spoiled:", len(os.listdir(TEMP_TRAIN_DIR + "/spoiled")))
+
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+datagen = ImageDataGenerator(rescale=1./255)
+
+train_data = datagen.flow_from_directory(
+    TEMP_TRAIN_DIR,
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    shuffle=True
+)
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
+
+model = Sequential([
+    Conv2D(32, (3,3), activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3)),
+    MaxPooling2D(2,2),
+
+    Conv2D(64, (3,3), activation='relu'),
+    MaxPooling2D(2,2),
+
+    Conv2D(128, (3,3), activation='relu'),
+    MaxPooling2D(2,2),
+
+    Flatten(),
+    Dense(64, activation='relu'),
+    Dropout(0.5),
+    Dense(2, activation='softmax')
+])
+
+model.compile(optimizer='adam',
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+EPOCHS = 5  # keep small due to tiny dataset
+
+history = model.fit(
+    train_data,
+    epochs=EPOCHS
+)
+
+import cv2
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report
-from sklearn.svm import SVC
 import matplotlib.pyplot as plt
 
-# Constants
-IMG_SIZE = 100
-BASE_PATH = '/content/drive/MyDrive/FoodSpoilageDataset'
+TEST_PATH = os.path.join(DATASET_PATH, 'test')
+class_names = list(train_data.class_indices.keys())
 
-# Load and preprocess images
-def load_images_from_folder(folder_path, label):
-    images, labels = [], []
-    for filename in os.listdir(folder_path):
-        img_path = os.path.join(folder_path, filename)
-        img = cv2.imread(img_path)
-        if img is not None:
+def predict_test_images():
+    for fname in os.listdir(TEST_PATH):
+        if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+            path = os.path.join(TEST_PATH, fname)
+            img = cv2.imread(path)
             img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-            img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            img_flat = img_gray.flatten()
-            images.append(img_flat)
-            labels.append(label)
-    return images, labels
+            img = img / 255.0
+            img = np.expand_dims(img, axis=0)
 
-# Load data
-fresh_images, fresh_labels = load_images_from_folder(os.path.join(BASE_PATH, 'fresh'), 'fresh')
-spoiled_images, spoiled_labels = load_images_from_folder(os.path.join(BASE_PATH, 'spoiled'), 'spoiled')
+            pred = model.predict(img)
+            label = class_names[np.argmax(pred)]
 
-# Combine data
-X = np.array(fresh_images + spoiled_images)
-y = np.array(fresh_labels + spoiled_labels)
+            plt.imshow(cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB))
+            plt.title(f"{fname} → Predicted: {label}")
+            plt.axis('off')
+            plt.show()
 
-# Encode labels
-le = LabelEncoder()
-y_encoded = le.fit_transform(y)
+predict_test_images()
 
-# Train-test split
-X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded)
-
-# Train the model
-model = SVC(kernel='linear', class_weight='balanced')
-model.fit(X_train, y_train)
-
-# Predict
-y_pred = model.predict(X_test)
-
-# Print safe classification report
-print("Classification Report:\n", classification_report(
-    y_test, y_pred,
-    labels=le.transform(le.classes_),
-    target_names=le.classes_
-))
-
-def predict_image(image_path):
-    img = cv2.imread(image_path)
-    img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
-    img_gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    img_flat = img_gray.flatten().reshape(1, -1)
-    prediction = model.predict(img_flat)
-    label = le.inverse_transform(prediction)[0]
-
-    plt.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-    plt.title(f"Prediction: {label}")
-    plt.axis('off')
-    plt.show()
-
-# Example usage
-predict_image('/content/drive/MyDrive/FoodSpoilageDataset/test/test3.jpg')
