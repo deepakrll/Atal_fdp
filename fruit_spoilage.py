@@ -96,4 +96,3 @@ def predict_test_images():
             plt.show()
 
 predict_test_images()
-
